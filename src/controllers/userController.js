@@ -1,5 +1,4 @@
 import pkg from 'pg'
-import { userValidation } from '../validation/user.validation.js'
 import bcrypt from 'bcrypt'
 
 const { Pool } = pkg
@@ -8,10 +7,36 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 })
 
+function queryDinamic(fields) {
+    const values = []
+    let filters = ''
+
+    Object.entries(fields).forEach(([chave, valor]) => {
+        if (valor) {
+            if (values.length === 0) {
+                if(chave === 'department_id'){
+                    filters += ` WHERE users.${chave} = $${values.length + 1}`
+                }else{
+                    filters += ` WHERE users.${chave} ILIKE $${values.length + 1}`
+                }
+            } else {
+                if(chave === 'department_id'){
+                    filters += ` AND users.${chave} = $${values.length + 1}`
+                }else{
+                    filters += ` AND users.${chave} ILIKE $${values.length + 1}`
+                }
+            
+            }
+            values.push(chave === 'department_id' ? Number(valor):`%${valor}%`) 
+        }
+    })
+    return {values, filters}
+}
+
 export class User{
     static async getUsers(req, res) {
 
-        const { page = 1, limit = 10, name, email, department_id } = req.query
+        const { page = 1, limit = 10, name, email, phone, department_id } = req.query
         const offset = (page - 1) * limit
         
         let query = `
@@ -22,42 +47,36 @@ export class User{
                 users 
             LEFT JOIN 
                 departments ON users.department_id = departments.id
-            WHERE 
-                1=1
         `
 
-        const values = []
-
-        if(name) {
-            query += ` AND users.name ILIKE $${values.length + 1}`
-            values.push(`%${name}%`)
-        }
-        if(email) {
-            query += ` AND users.email ILIKE $${values.length + 1}`
-            values.push(`%${email}%`)
-        }
-        if(department_id) {
-            query += ` AND users.department_id = $${values.length + 1}`
-            values.push(department_id)
-        }
-
+        const {filters, values} = queryDinamic({name, email, phone, department_id, })
+        
+        query += filters
         query += ` LIMIT $${values.length + 1} OFFSET $${values.length + 2}`
         values.push(limit, offset)
+
+        console.log(query, values)
 
         try{
             const users = await pool.query(query, values)
           
-            const totalUsersResult = await pool.query(`
+            let queryCount = `
                 SELECT COUNT(*) 
                 FROM users
-                WHERE 1=1
-                ${name ? ' AND name ILIKE $1' : ''}
-                ${email ? ' AND email ILIKE $2' : ''}
-                ${department_id ? ' AND department_id = $3' : ''}
-            `, values.slice(0, values.length - 2))
-                
+            `
+            queryCount += filters
+            let totalUsersResult
+            if (filters === ''){
+                totalUsersResult = await pool.query(queryCount)
+            }else {
+                totalUsersResult = await pool.query(queryCount, values.slice(0, values.length - 2))
+            }
+            
+            console.log(totalUsersResult)
+            
             const totalUsers = totalUsersResult.rows[0].count
             const totalPages = Math.ceil(totalUsers/limit)
+            
             res.status(200).json({
                 users: users.rows,
                 page: page,
@@ -98,7 +117,6 @@ export class User{
 
     static async createUser(req, res) {
         try{
-            await userValidation.parse(req.body)
 
             const { name, email, password, phone } = req.body
 
